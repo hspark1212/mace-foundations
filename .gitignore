@@ -21,3 +21,7 @@ build/
 
 # Distribution
 dist/
+
+# mace-foundations
+demo*
+dataset/
