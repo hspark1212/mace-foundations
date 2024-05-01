@@ -34,3 +34,6 @@ dist/
 # mace-foundations
 demo*
 dataset/
+*.qsub
+*.sh
+mace_descriptors.py
