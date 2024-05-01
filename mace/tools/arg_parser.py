@@ -219,14 +219,17 @@ def build_default_arg_parser() -> argparse.ArgumentParser:
 
     # Dataset
     parser.add_argument(
-        "--train_file", help="Training set xyz file", type=str, required=True
+        "--train_path", help="Training set xyz file", type=str, required=True
     )
     parser.add_argument(
-        "--valid_file",
-        help="Validation set xyz file",
-        default=None,
+        "--valid_path",
+        help="Training set xyz file",
         type=str,
+        default=None,
         required=False,
+    )
+    parser.add_argument(
+        "--test_path", help="Test set xyz file", type=str, required=False
     )
     parser.add_argument(
         "--valid_fraction",
@@ -234,11 +237,6 @@ def build_default_arg_parser() -> argparse.ArgumentParser:
         type=float,
         default=0.1,
         required=False,
-    )
-    parser.add_argument(
-        "--test_file",
-        help="Test set xyz file",
-        type=str,
     )
     parser.add_argument(
         "--E0s",

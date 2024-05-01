@@ -200,10 +200,7 @@ def create_error_table(
         ]
     for name, subset in all_collections:
         data_loader = torch_geometric.dataloader.DataLoader(
-            dataset=[
-                AtomicData.from_config(config, z_table=z_table, cutoff=r_max)
-                for config in subset
-            ],
+            dataset=subset,
             batch_size=valid_batch_size,
             shuffle=False,
             drop_last=False,

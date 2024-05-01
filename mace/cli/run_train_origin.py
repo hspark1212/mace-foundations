@@ -12,67 +12,19 @@ from typing import Optional
 
 import numpy as np
 import torch.nn.functional
-from torch.utils.data import ConcatDataset
+from e3nn import o3
 from torch.optim.swa_utils import SWALR, AveragedModel
 from torch_ema import ExponentialMovingAverage
-from e3nn import o3
 
 import mace
 from mace import data, modules, tools
 from mace.calculators import mace_mp
 from mace.tools import torch_geometric, load_foundations
-from mace.tools.scripts_utils import LRScheduler, create_error_table
-
-
-class LazyDataset(torch.utils.data.Dataset):
-    def __init__(
-        self,
-        file_path: str,
-        split: str,
-        config_type_weights: dict,
-        energy_key: str = "energy",
-        forces_key: str = "forces",
-        stress_key: str = "stress",
-        virials_key: str = "virials",
-        dipole_key: str = "dipoles",
-        charges_key: str = "charges",
-    ):
-        assert split in ["train", "valid", "test"]
-        self.atomic_energies_dict, self.all_configs = data.load_from_xyz(
-            file_path=file_path,
-            config_type_weights=config_type_weights,
-            energy_key=energy_key,
-            forces_key=forces_key,
-            stress_key=stress_key,
-            virials_key=virials_key,
-            dipole_key=dipole_key,
-            charges_key=charges_key,
-            extract_atomic_energies=True if split == "train" else False,
-        )
-        self.return_data = False
-        self.z_table = None
-        self.r_max = None
-
-    def __len__(self):
-        return len(self.all_configs)
-
-    def __getitem__(self, idx):
-        # default return configs
-        if self.return_data:
-            assert self.z_table is not None, "z_table not set"
-            assert self.r_max is not None, "r_max not set"
-            return data.AtomicData.from_config(
-                self.all_configs[idx], z_table=self.z_table, cutoff=self.r_max
-            )
-        else:
-            return self.all_configs[idx]
-
-    def set_return_data(self, z_table, r_max):
-        self.return_data = True
-        assert z_table is not None, "z_table cannot be None"
-        assert r_max is not None, "r_max cannot be None"
-        self.z_table = z_table
-        self.r_max = r_max
+from mace.tools.scripts_utils import (
+    LRScheduler,
+    create_error_table,
+    get_dataset_from_xyz,
+)
 
 
 def main() -> None:
@@ -99,85 +51,37 @@ def main() -> None:
         )
         config_type_weights = {"Default": 1.0}
 
-    # construct multiple datasets for lazy loading
-    train_path = Path(args.train_path)
-    train_files = list(train_path.glob("*.extxyz"))
-    if args.valid_path is None:
-        train_files, valid_files = data.random_train_valid_split(
-            train_files, args.valid_fraction, args.seed
-        )
-    else:
-        valid_path = Path(args.valid_path)
-        valid_files = list(valid_path.glob("*.extxyz"))
-    assert len(train_files) > 0, "No training files found"
-    assert len(valid_files) > 0, "No validation files found"
-    # train dataset
-    train_dataset_list = [
-        LazyDataset(
-            file_path=file,
-            split="train",
-            config_type_weights=config_type_weights,
-            energy_key=args.energy_key,
-            forces_key=args.forces_key,
-            stress_key=args.stress_key,
-            virials_key=args.virials_key,
-            dipole_key=args.dipole_key,
-            charges_key=args.charges_key,
-        )
-        for file in train_files
-    ]
-    train_dataset = ConcatDataset(train_dataset_list)
-    # validation dataset
-    valid_dataset_list = [
-        LazyDataset(
-            file_path=file,
-            split="valid",
-            config_type_weights=config_type_weights,
-            energy_key=args.energy_key,
-            forces_key=args.forces_key,
-            stress_key=args.stress_key,
-            virials_key=args.virials_key,
-            dipole_key=args.dipole_key,
-            charges_key=args.charges_key,
-        )
-        for file in valid_files
-    ]
-    valid_dataset = ConcatDataset(valid_dataset_list)
-    # test dataset
-    test_path = Path(args.test_path)
-    test_files = list(test_path.glob("*.extxyz"))
-    assert len(test_files) > 0, "No test files found"
-    test_dataset_list = [
-        LazyDataset(
-            file_path=file,
-            split="test",
-            config_type_weights=config_type_weights,
-            energy_key=args.energy_key,
-            forces_key=args.forces_key,
-            stress_key=args.stress_key,
-            virials_key=args.virials_key,
-            dipole_key=args.dipole_key,
-            charges_key=args.charges_key,
-        )
-        for file in test_files
-    ]
-    test_dataset = ConcatDataset(test_dataset_list)
-    print(
-        "Total number of configurations: "
-        f"train={len(train_dataset)}, valid={len(valid_dataset)}, tests={len(test_dataset)}"
+    # Data preparation
+    collections, atomic_energies_dict = get_dataset_from_xyz(
+        train_path=args.train_file,
+        valid_path=args.valid_file,
+        valid_fraction=args.valid_fraction,
+        config_type_weights=config_type_weights,
+        test_path=args.test_file,
+        seed=args.seed,
+        energy_key=args.energy_key,
+        forces_key=args.forces_key,
+        stress_key=args.stress_key,
+        virials_key=args.virials_key,
+        dipole_key=args.dipole_key,
+        charges_key=args.charges_key,
     )
-    atomic_energies_dict = None  # atomic_energies_dict is None for mace-mp-0
+
+    logging.info(
+        f"Total number of configurations: train={len(collections.train)}, valid={len(collections.valid)}, "
+        f"tests=[{', '.join([name + ': ' + str(len(test_configs)) for name, test_configs in collections.tests])}]"
+    )
 
     # Atomic number table
+    # yapf: disable
     z_table = tools.get_atomic_number_table_from_zs(
         z
-        for dataset in (train_dataset, valid_dataset)
-        for config in dataset
+        for configs in (collections.train, collections.valid)
+        for config in configs
         for z in config.atomic_numbers
     )
+    # yapf: enable
     logging.info(z_table)
-
-    # Atomic Energies
     if args.model == "AtomicDipolesMACE":
         atomic_energies = None
         dipole_only = True
@@ -207,7 +111,7 @@ def main() -> None:
                         "Computing average Atomic Energies using least squares regression"
                     )
                     atomic_energies_dict = data.compute_average_E0s(
-                        train_dataset, z_table  # collections.train, z_table
+                        collections.train, z_table
                     )
                 else:
                     try:
@@ -226,19 +130,20 @@ def main() -> None:
         )
         logging.info(f"Atomic energies: {atomic_energies.tolist()}")
 
-    for concat_dataset in (train_dataset, valid_dataset, test_dataset):
-        for dataset in concat_dataset.datasets:
-            dataset.set_return_data(z_table, args.r_max)
-    print("Dataset setup complete to return data, not configs")
-
     train_loader = torch_geometric.dataloader.DataLoader(
-        dataset=train_dataset,
+        dataset=[
+            data.AtomicData.from_config(config, z_table=z_table, cutoff=args.r_max)
+            for config in collections.train
+        ],
         batch_size=args.batch_size,
         shuffle=True,
         drop_last=True,
     )
     valid_loader = torch_geometric.dataloader.DataLoader(
-        dataset=valid_dataset,
+        dataset=[
+            data.AtomicData.from_config(config, z_table=z_table, cutoff=args.r_max)
+            for config in collections.valid
+        ],
         batch_size=args.valid_batch_size,
         shuffle=False,
         drop_last=False,
@@ -682,10 +587,9 @@ def main() -> None:
     logging.info("Computing metrics for training, validation, and test sets")
 
     all_collections = [
-        ("train", train_dataset),
-        ("valid", valid_dataset),
-        ("test", test_dataset),
-    ]
+        ("train", collections.train),
+        ("valid", collections.valid),
+    ] + collections.tests
 
     for swa_eval in swas:
         epoch = checkpoint_handler.load_latest(
