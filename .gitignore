@@ -30,3 +30,7 @@ dist/
 /wandb
 /checkpoints
 *.model
+
+# mace-foundations
+demo*
+dataset/
